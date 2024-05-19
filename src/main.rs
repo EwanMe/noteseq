@@ -1,10 +1,11 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use core::panic;
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Device, StreamConfig,
 };
-use std::f32::consts::PI;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::{f32::consts::PI, sync::Arc, time::Duration};
 
 const REFERENCE_OCTAVE: i32 = 4;
 const REFERENCE_PITCH: f32 = 440.0;
@@ -12,19 +13,60 @@ const REFERENCE_PITCH: f32 = 440.0;
 #[derive(Parser)]
 #[command(version, about, long_about=None)]
 struct Cli {
-    #[arg(help = "The note you want to play")]
-    note: String,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Single {
+        #[arg(help = "The note you want to play")]
+        note: String,
+    },
+    Sequence {
+        #[arg(help = "Sequence of notes to play")]
+        notes: Vec<String>,
+    },
+}
+
+#[derive(Copy, Clone)]
+struct Note {
+    frequency: f32,
+    amplitude: f32,
+    num_samples: u128,
+}
+
+impl Note {
+    fn new(
+        frequency: f32,
+        amplitude: f32,
+        duration: Option<Duration>,
+        sample_rate: Option<&u128>,
+    ) -> Self {
+        const FIXME: u128 = 2;
+        Note {
+            frequency,
+            amplitude,
+            num_samples: match sample_rate {
+                Some(sr) => match duration {
+                    Some(d) => d.as_millis() / 1000 * sr * FIXME,
+                    None => 0,
+                },
+                None => 0,
+            },
+        }
+    }
 }
 
 fn get_device_config(device: &Device) -> StreamConfig {
     let mut supported_configs_range = device
         .supported_output_configs()
         .expect("Error while querying configs");
-    return supported_configs_range
+    supported_configs_range
         .next()
         .expect("No supported config")
         .with_max_sample_rate()
-        .config();
+        .config()
 }
 
 fn get_frequency_from_note(note_name: &str) -> f32 {
@@ -62,19 +104,96 @@ fn get_frequency_from_note(note_name: &str) -> f32 {
     };
 
     semitone_distance += 12 * (octave_num - REFERENCE_OCTAVE);
-    return 2f32.powf(semitone_distance as f32 / 12.0) * REFERENCE_PITCH;
+    2f32.powf(semitone_distance as f32 / 12.0) * REFERENCE_PITCH
 }
 
-fn get_next_sample(frequency: f32, amplitude: &f32, sample_rate: &f32) -> f32 {
-    static POS: AtomicI32 = AtomicI32::new(0);
-    let t = POS.fetch_add(1, Ordering::Release) as f32 / sample_rate;
-    (2.0 * PI * frequency * t).sin() * amplitude
+fn get_frequencies_from_notes(notes: &Vec<String>) -> Vec<f32> {
+    notes.iter().map(|f| get_frequency_from_note(f)).collect()
+}
+
+struct Player {
+    pos: std::vec::IntoIter<Note>,
+    sample_rate: u32,
+    sample_num: u32,
+    current_note: Option<Note>,
+}
+
+impl Player {
+    fn new(notes: Vec<Note>, sample_rate: u32) -> Self {
+        let mut pos = notes.clone().into_iter();
+        let current_note = match pos.next() {
+            Some(n) => n,
+            None => panic!(""),
+        };
+
+        Player {
+            pos,
+            sample_rate,
+            sample_num: 0,
+            current_note: Some(current_note),
+        }
+    }
+
+    fn next_note(&mut self) -> Option<Note> {
+        self.pos.next()
+    }
+
+    fn next_note_val(&mut self) -> Option<Note> {
+        match self.current_note {
+            Some(current_note) => {
+                if current_note.num_samples != 0 {
+                    let current_sample_num = self.sample_num;
+                    self.sample_num += 1;
+
+                    if (current_sample_num as u128) >= current_note.num_samples {
+                        self.sample_num = 0;
+                        self.current_note = self.next_note();
+                    }
+                }
+                Some(current_note)
+            }
+            None => None,
+        }
+    }
+
+    fn get_next_sample(&mut self) -> Option<f32> {
+        static POS: AtomicU32 = AtomicU32::new(0);
+
+        match self.next_note_val() {
+            Some(n) => {
+                let t = POS.fetch_add(1, Ordering::SeqCst) as f32 / self.sample_rate as f32;
+                Some((2.0 * PI * n.frequency * t).sin() * n.amplitude)
+            }
+            None => None,
+        }
+    }
+}
+
+fn get_note(note_name: &str) -> Vec<Note> {
+    let freq = get_frequencies_from_notes(&vec![String::from(note_name)]);
+    if freq.len() != 1 {
+        panic!("Wtf");
+    }
+
+    return vec![Note::new(*freq.first().unwrap(), 0.5, None, None)];
+}
+
+fn get_notes(note_names: &Vec<String>) -> Vec<Note> {
+    get_frequencies_from_notes(note_names)
+        .iter()
+        .map(|f| Note::new(*f, 0.5, Some(Duration::from_secs(1)), Some(&48000)))
+        .collect()
 }
 
 fn main() {
     let cli = Cli::parse();
-    let frequency = get_frequency_from_note(&cli.note);
-    let amplitude = 0.5;
+
+    let notes = match &cli.command {
+        Commands::Single { note } => get_note(note),
+        Commands::Sequence { notes } => get_notes(notes),
+    };
+
+    let mut player = Player::new(notes, 48000);
 
     // let wanted_device = "Speakers (Steam Streaming Speakers)";
     let wanted_device = "Speakers (Focusrite USB Audio)";
@@ -89,25 +208,38 @@ fn main() {
 
     let config = get_device_config(&device);
 
+    let done = Arc::new(AtomicBool::new(false));
+    let done_clone = Arc::clone(&done);
+
     let stream = device
         .build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 for output_sample in data.iter_mut() {
-                    *output_sample =
-                        get_next_sample(frequency, &amplitude, &(config.sample_rate.0 as f32));
+                    match player.get_next_sample() {
+                        Some(sample) => {
+                            *output_sample = sample;
+                        }
+                        None => {
+                            done_clone.store(true, Ordering::SeqCst);
+                        }
+                    };
                 }
             },
             move |err| {
-                eprintln!("Error: {}", err);
+                eprintln!("Output stream callback failed: {}", err);
             },
             None,
         )
         .expect("Failed to build output stream");
 
-    println!("Playing: {}", frequency);
     stream.play().expect("Failed to play audio");
 
-    println!("Press Enter to exit...");
-    let _ = std::io::stdin().read_line(&mut String::new());
+    match &cli.command {
+        Commands::Single { note: _ } => {
+            println!("Press Enter to exit...");
+            let _ = std::io::stdin().read_line(&mut String::new());
+        }
+        Commands::Sequence { notes: _ } => while !done.load(Ordering::SeqCst) {},
+    }
 }
