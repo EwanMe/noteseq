@@ -2,19 +2,26 @@ use clap::{Parser, Subcommand};
 use core::panic;
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, StreamConfig,
+    Device, SampleRate, StreamConfig,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::{f32::consts::PI, sync::Arc, time::Duration};
 
 const REFERENCE_OCTAVE: i32 = 4;
 const REFERENCE_PITCH: f32 = 440.0;
+const DEFAULT_SAMPLE_RATE: u32 = 48000;
 
 #[derive(Parser)]
 #[command(version, about, long_about=None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    #[arg(short, long)]
+    device: Option<String>,
+
+    #[arg(short, long)]
+    sample_rate: Option<u32>,
 }
 
 #[derive(Subcommand)]
@@ -43,13 +50,12 @@ impl Note {
         duration: Option<Duration>,
         sample_rate: Option<&u128>,
     ) -> Self {
-        const FIXME: u128 = 2;
         Note {
             frequency,
             amplitude,
             num_samples: match sample_rate {
                 Some(sr) => match duration {
-                    Some(d) => d.as_millis() / 1000 * sr * FIXME,
+                    Some(d) => d.as_millis() / 1000 * sr,
                     None => 0,
                 },
                 None => 0,
@@ -58,15 +64,17 @@ impl Note {
     }
 }
 
-fn get_device_config(device: &Device) -> StreamConfig {
-    let mut supported_configs_range = device
+fn get_device_config(device: &Device, sample_rate: Option<u32>) -> StreamConfig {
+    let mut output_configs = device
         .supported_output_configs()
         .expect("Error while querying configs");
-    supported_configs_range
-        .next()
-        .expect("No supported config")
-        .with_max_sample_rate()
-        .config()
+    let config_range = output_configs.next().expect("No supported config");
+    match sample_rate {
+        Some(sr) => config_range.with_sample_rate(SampleRate(sr)).config(),
+        None => config_range
+            .with_sample_rate(SampleRate(DEFAULT_SAMPLE_RATE))
+            .config(),
+    }
 }
 
 fn get_frequency_from_note(note_name: &str) -> f32 {
@@ -170,43 +178,51 @@ impl Player {
 }
 
 fn get_note(note_name: &str) -> Vec<Note> {
-    let freq = get_frequencies_from_notes(&vec![String::from(note_name)]);
-    if freq.len() != 1 {
-        panic!("Wtf");
+    let notes = get_notes(&vec![String::from(note_name)], None, None);
+    if notes.len() != 1 {
+        panic!("Failed to map single note name to single note object");
     }
 
-    return vec![Note::new(*freq.first().unwrap(), 0.5, None, None)];
+    return notes;
 }
 
-fn get_notes(note_names: &Vec<String>) -> Vec<Note> {
+fn get_notes(
+    note_names: &Vec<String>,
+    sample_rate: Option<&u128>,
+    duration: Option<Duration>,
+) -> Vec<Note> {
     get_frequencies_from_notes(note_names)
         .iter()
-        .map(|f| Note::new(*f, 0.5, Some(Duration::from_secs(1)), Some(&48000)))
+        .map(|f| Note::new(*f, 0.5, duration, sample_rate))
         .collect()
 }
 
 fn main() {
     let cli = Cli::parse();
 
+    let host = cpal::default_host();
+
+    let device = match cli.device {
+        Some(wanted_device) => host
+            .output_devices()
+            .expect("Failed to get output devices")
+            .find(|device| {
+                device.name().expect("Failed to access name of a device") == wanted_device
+            })
+            .expect(format!("Failed to find device {}", wanted_device).as_str()),
+        None => host.default_output_device().unwrap(),
+    };
+    let config = get_device_config(&device, cli.sample_rate);
+
     let notes = match &cli.command {
         Commands::Single { note } => get_note(note),
-        Commands::Sequence { notes } => get_notes(notes),
+        Commands::Sequence { notes } => get_notes(
+            notes,
+            Some(&(config.sample_rate.0 as u128)),
+            Some(Duration::new(1, 0)),
+        ),
     };
-
-    let mut player = Player::new(notes, 48000);
-
-    // let wanted_device = "Speakers (Steam Streaming Speakers)";
-    let wanted_device = "Speakers (Focusrite USB Audio)";
-    // let wanted_device = "CABLE Input (VB-Audio Virtual Cable)";
-
-    let host = cpal::default_host();
-    let device = host
-        .output_devices()
-        .expect("Failed to get output devices")
-        .find(|device| device.name().expect("Failed to access name of a device") == wanted_device)
-        .expect("Failed to find device");
-
-    let config = get_device_config(&device);
+    let mut player = Player::new(notes, config.sample_rate.0);
 
     let done = Arc::new(AtomicBool::new(false));
     let done_clone = Arc::clone(&done);
