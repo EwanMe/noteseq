@@ -4,34 +4,59 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Device, SampleRate, StreamConfig,
 };
+use regex::Regex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::{f32::consts::PI, sync::Arc, time::Duration};
 
 const REFERENCE_OCTAVE: i32 = 4;
 const REFERENCE_PITCH: f32 = 440.0;
-const DEFAULT_SAMPLE_RATE: u32 = 48000;
+
+fn validate_note(value: &str) -> Result<String, String> {
+    let re = Regex::new(r"^[a-gA-G](#|b)?[0-9]*$").map_err(|err| err.to_string())?;
+    if re.is_match(value) {
+        Ok(value.to_string())
+    } else {
+        Err(String::from(
+            "Note must be letter from A-G (case insensitive), \
+            optionally followed by accidental # or b and an octave number 0-9. E.g. C#4.",
+        ))
+    }
+}
+
+fn validate_notes(value: &str) -> Result<String, String> {
+    value.split(' ').map(|e| validate_note(e)).collect()
+}
 
 #[derive(Parser)]
-#[command(version, about, long_about=None)]
+#[command(version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 
+    /// Device to play playback from
     #[arg(short, long)]
     device: Option<String>,
 
-    #[arg(short, long)]
-    sample_rate: Option<u32>,
+    /// Sample rate of playback
+    #[arg(short, long, default_value_t = 48000)]
+    sample_rate: u32,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    Single {
-        #[arg(help = "The note you want to play")]
+    /// Play single note until manually stopped
+    #[clap(alias = "fer")]
+    Fermata {
+        /// The note you want to play
+        #[arg(value_parser = validate_note)]
         note: String,
     },
+
+    /// Play sequence of notes
+    #[clap(alias = "seq")]
     Sequence {
-        #[arg(help = "Sequence of notes to play")]
+        /// Sequence of notes to play
+        #[arg(value_parser = validate_notes)]
         notes: Vec<String>,
     },
 }
@@ -47,76 +72,70 @@ impl Note {
     fn new(
         frequency: f32,
         amplitude: f32,
+        sample_rate: u32,
         duration: Option<Duration>,
-        sample_rate: Option<&u128>,
-    ) -> Self {
-        Note {
-            frequency,
-            amplitude,
-            num_samples: match sample_rate {
-                Some(sr) => match duration {
-                    Some(d) => d.as_millis() / 1000 * sr,
+    ) -> Result<Self, String> {
+        if frequency > sample_rate as f32 / 2.0 {
+            Err(String::from(format!(
+                "Cannot play note of frequency {frequency} Hz \
+                when the sample rate is {sample_rate} Hz, \
+                since it exceeds the Nyquist frequency of {nyquist} Hz.",
+                nyquist = sample_rate / 2
+            )))
+        } else {
+            Ok(Note {
+                frequency,
+                amplitude,
+                num_samples: match duration {
+                    Some(d) => d.as_millis() / 1000 * sample_rate as u128,
                     None => 0,
                 },
-                None => 0,
-            },
+            })
         }
     }
 }
 
-fn get_device_config(device: &Device, sample_rate: Option<u32>) -> StreamConfig {
-    let mut output_configs = device
+fn get_device_config(device: &Device, sample_rate: u32) -> StreamConfig {
+    device
         .supported_output_configs()
-        .expect("Error while querying configs");
-    let config_range = output_configs.next().expect("No supported config");
-    match sample_rate {
-        Some(sr) => config_range.with_sample_rate(SampleRate(sr)).config(),
-        None => config_range
-            .with_sample_rate(SampleRate(DEFAULT_SAMPLE_RATE))
-            .config(),
-    }
+        .expect("Error while querying configs")
+        .next()
+        .expect("No supported config")
+        .with_sample_rate(SampleRate(sample_rate))
+        .config()
 }
 
 fn get_frequency_from_note(note_name: &str) -> f32 {
-    if note_name.len() < 2 {
-        panic!("Note name too short");
-    } else if note_name.len() > 3 {
-        panic!("Note name too long");
+    let (note, mut octave) = note_name.split_at(1);
+    let mut semitone_offset = 0;
+    if octave.len() > 1 {
+        let mut chars = octave.chars();
+        let accidental = chars.next().unwrap();
+        octave = chars.as_str();
+        if accidental == '#' {
+            semitone_offset = 1;
+        } else if accidental == 'b' {
+            semitone_offset = -1;
+        }
     }
-
-    let (note, octave): (&str, &str);
-    if note_name.contains("#") || note_name.contains("b") {
-        (note, octave) = note_name.split_at(2);
-    } else {
-        (note, octave) = note_name.split_at(1);
-    };
 
     let octave_num = octave
         .parse::<i32>()
         .expect("Failed to parse octave number");
 
-    let mut semitone_distance: i32 = match note {
+    let mut semitone_distance: i32 = match note.to_uppercase().as_str() {
         "C" => -9,
-        "C#" | "Db" => -8,
         "D" => -7,
-        "D#" | "Eb" => -6,
         "E" => -5,
         "F" => -4,
-        "F#" | "Gb" => -3,
         "G" => -2,
-        "G#" | "Ab" => -1,
         "A" => 0,
-        "A#" | "Bb" => 1,
         "B" => 2,
         unknown => panic!("Unknown note: {}", unknown),
     };
 
-    semitone_distance += 12 * (octave_num - REFERENCE_OCTAVE);
+    semitone_distance += 12 * (octave_num - REFERENCE_OCTAVE) + semitone_offset;
     2f32.powf(semitone_distance as f32 / 12.0) * REFERENCE_PITCH
-}
-
-fn get_frequencies_from_notes(notes: &Vec<String>) -> Vec<f32> {
-    notes.iter().map(|f| get_frequency_from_note(f)).collect()
 }
 
 struct Player {
@@ -177,23 +196,20 @@ impl Player {
     }
 }
 
-fn get_note(note_name: &str) -> Vec<Note> {
-    let notes = get_notes(&vec![String::from(note_name)], None, None);
-    if notes.len() != 1 {
-        panic!("Failed to map single note name to single note object");
-    }
-
-    return notes;
+fn get_note(note_name: &str, sample_rate: u32, duration: Option<Duration>) -> Note {
+    Note::new(
+        get_frequency_from_note(note_name),
+        0.8,
+        sample_rate,
+        duration,
+    )
+    .unwrap()
 }
 
-fn get_notes(
-    note_names: &Vec<String>,
-    sample_rate: Option<&u128>,
-    duration: Option<Duration>,
-) -> Vec<Note> {
-    get_frequencies_from_notes(note_names)
+fn get_notes(note_names: &Vec<String>, sample_rate: u32, duration: Option<Duration>) -> Vec<Note> {
+    note_names
         .iter()
-        .map(|f| Note::new(*f, 0.5, duration, sample_rate))
+        .map(|note_name| get_note(note_name, sample_rate, duration))
         .collect()
 }
 
@@ -215,12 +231,10 @@ fn main() {
     let config = get_device_config(&device, cli.sample_rate);
 
     let notes = match &cli.command {
-        Commands::Single { note } => get_note(note),
-        Commands::Sequence { notes } => get_notes(
-            notes,
-            Some(&(config.sample_rate.0 as u128)),
-            Some(Duration::new(1, 0)),
-        ),
+        Commands::Fermata { note } => vec![get_note(note, config.sample_rate.0, None)],
+        Commands::Sequence { notes } => {
+            get_notes(notes, config.sample_rate.0, Some(Duration::new(1, 0)))
+        }
     };
     let mut player = Player::new(notes, config.sample_rate.0);
 
@@ -252,7 +266,7 @@ fn main() {
     stream.play().expect("Failed to play audio");
 
     match &cli.command {
-        Commands::Single { note: _ } => {
+        Commands::Fermata { note: _ } => {
             println!("Press Enter to exit...");
             let _ = std::io::stdin().read_line(&mut String::new());
         }
