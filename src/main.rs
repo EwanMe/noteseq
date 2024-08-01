@@ -99,32 +99,31 @@ fn get_frequency_from_note(note_name: &str) -> Result<f32, String> {
     }
     let re = Regex::new(r"^(?P<note>[a-gA-G])(?P<accidental>#*|b*)(?P<octave>[0-9]?)$").unwrap();
     let captures = match re.captures(note_name) {
-        Some(c) => c,
+        Some(captures) => captures,
         None => {
             return Err(format!(
                 "Invalid note: {note_name}. Must be letter from A-G (case insensitive), \
-            optionally followed by accidental # or b and an octave number 0-9. E.g. C#4.",
-            ));
+            optionally followed by accidental # or b and an octave number 0-9. E.g. C#4."
+            ))
         }
     };
 
     let note = captures.name("note").unwrap().as_str();
-    let semitone_offset = match captures.name("accidental") {
-        Some(acc) => {
+    let semitone_offset = match captures.name("accidental").unwrap().as_str() {
+        "" => 0,
+        accidental => {
             let mut offset: i32 = 0;
-            offset += count_chars(acc.as_str(), '#');
-            offset -= count_chars(acc.as_str(), 'b');
+            offset += count_chars(accidental, '#');
+            offset -= count_chars(accidental, 'b');
             offset
         }
-        None => 0,
     };
-    let octave_num = match captures.name("octave") {
-        Some(oct) => oct
-            .as_str()
+
+    let octave_num = match captures.name("octave").unwrap().as_str() {
+        "" => REFERENCE_OCTAVE,
+        octave => octave
             .parse::<i32>()
-            .expect(format!("Failed to parse octave number {}", oct.as_str()).as_str()),
-        // Using the reference octave as default
-        None => REFERENCE_OCTAVE,
+            .expect(format!("Failed to parse '{octave}' into octave number").as_str()),
     };
 
     let mut semitone_distance: i32 = match note.to_uppercase().as_str() {
@@ -135,7 +134,7 @@ fn get_frequency_from_note(note_name: &str) -> Result<f32, String> {
         "G" => -2,
         "A" => 0,
         "B" => 2,
-        unknown => panic!("Unknown note: {unknown}"),
+        unknown => return Err(format!("Unknown note: {unknown}")),
     };
 
     semitone_distance += 12 * (octave_num - REFERENCE_OCTAVE) + semitone_offset;
