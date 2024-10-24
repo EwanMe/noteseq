@@ -24,7 +24,7 @@ struct Cli {
     /// number is a single number from 0-9. The note value part of the note is any number that is
     /// a power of two, i.e. 1, 2, 4, 8, etc. This number represents the fraction of a whole note,
     /// where the provided number is the divisor, e.g. 8 represents an eight note (1/8).
-    #[arg()]
+    #[arg(required = true)]
     sequence: Vec<String>,
 
     /// Hold last note of sequence until stopped by the user
