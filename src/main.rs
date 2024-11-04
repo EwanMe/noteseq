@@ -13,7 +13,6 @@ use std::{
 };
 
 const REFERENCE_OCTAVE: i32 = 4;
-const REFERENCE_PITCH: f32 = 440.0;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -34,6 +33,10 @@ struct Cli {
     /// Tempo for note sequence
     #[arg(short, long, default_value_t = 120)]
     tempo: u32,
+
+    /// Reference pitch for note tuning
+    #[arg(long, default_value_t = 440.0)]
+    tuning: f32,
 
     /// Device to play playback from
     #[arg(short, long)]
@@ -86,7 +89,7 @@ fn get_device_config(device: &Device, sample_rate: u32) -> StreamConfig {
         .config()
 }
 
-fn get_frequency_from_note(note_name: &str) -> Result<f32, String> {
+fn get_frequency_from_note(note_name: &str, tuning: f32) -> Result<f32, String> {
     fn count_chars(string: &str, c: char) -> i32 {
         string
             .chars()
@@ -136,7 +139,7 @@ fn get_frequency_from_note(note_name: &str) -> Result<f32, String> {
     };
 
     semitone_distance += 12 * (octave_num - REFERENCE_OCTAVE) + semitone_offset;
-    Ok(2f32.powf(semitone_distance as f32 / 12.0) * REFERENCE_PITCH)
+    Ok(2f32.powf(semitone_distance as f32 / 12.0) * tuning)
 }
 
 struct Player {
@@ -197,9 +200,14 @@ impl Player {
     }
 }
 
-fn get_note(note_name: &str, sample_rate: u32, duration: Duration) -> Result<Note, String> {
+fn get_note(
+    note_name: &str,
+    tuning: f32,
+    sample_rate: u32,
+    duration: Duration,
+) -> Result<Note, String> {
     Note::new(
-        get_frequency_from_note(note_name)?,
+        get_frequency_from_note(note_name, tuning)?,
         0.8,
         sample_rate,
         duration,
@@ -255,16 +263,22 @@ fn parse_duration(s: &str, tempo: u32) -> Result<Duration, ArgumentParseError> {
     }
 }
 
-fn parse_notes(s: &Vec<String>, tempo: u32, sample_rate: u32) -> Result<Vec<Note>, String> {
+fn parse_notes(
+    s: &Vec<String>,
+    tuning: f32,
+    tempo: u32,
+    sample_rate: u32,
+) -> Result<Vec<Note>, String> {
     let t: Result<Vec<Note>, ArgumentParseError> = s
         .iter()
         .map(|n| {
             let notes: Vec<&str> = n.split(':').collect();
             if notes.len() < 2 {
-                return Ok(get_note(notes[0], sample_rate, Duration::new(1, 0)).unwrap());
+                return Ok(get_note(notes[0], tuning, sample_rate, Duration::new(1, 0)).unwrap());
             } else if notes.len() < 3 {
                 return Ok(get_note(
                     notes[0],
+                    tuning,
                     sample_rate,
                     parse_duration(notes[1], tempo).unwrap(),
                 )
@@ -294,7 +308,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let config = get_device_config(&device, cli.sample_rate);
 
-    let mut notes = parse_notes(&cli.sequence, cli.tempo, config.sample_rate.0)?;
+    let mut notes = parse_notes(&cli.sequence, cli.tuning, cli.tempo, config.sample_rate.0)?;
     if cli.fermata {
         let last = notes.len() - 1;
         notes[last].num_samples = 0;
