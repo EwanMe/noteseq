@@ -12,11 +12,30 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
+/// TODO
+/// * Fix wave clipping
+/// * Support pauses
+/// * Take configuration from file
+/// * Specify velocity for notes
+/// * Support inflections
+
+/// * Specify duration of notes
+///
+/// Rewrite program to only have one mode, which is the current sequence mode.
+/// Make fermata be a flag that signifies that the last note is held indefinitely,
+/// which allows the old behavior when only one note is played with the flag.
+///
+/// New notation to specify duration: <pitch>:<note value>. If a note value is not
+/// present, we default to quarter note. As a start we only support 4/4 musical metre.
+/// The tempo can be specified by passing the --tempo flag and providing the Hz. The
+/// default tempo value is 120 Hz.
+
 const REFERENCE_OCTAVE: i32 = 4;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// Note format is on scientific pitch notation followed by ':' and the divisor of a note value fraction.
     /// Note sequence to play. Format of notes is <pitch>:<note value>. The pitch part is on the
     /// format <note name><accidentals><octave number>. Note name is a case insensitive letter
     /// from A-G. Accidentals are optional and can be any number of '#' and 'b' symbols. Octave
@@ -145,8 +164,10 @@ fn get_frequency_from_note(note_name: &str, tuning: f32) -> Result<f32, String> 
 struct Player {
     pos: std::vec::IntoIter<Note>,
     sample_rate: u32,
-    sample_num: u32,
+    sample_num: u128,
     current_note: Option<Note>,
+    phase_shift: f32,
+    last_y: f32,
 }
 
 impl Player {
@@ -162,6 +183,8 @@ impl Player {
             sample_rate,
             sample_num: 0,
             current_note: Some(current_note),
+            phase_shift: 0.0,
+            last_y: 0.0,
         }
     }
 
@@ -170,30 +193,56 @@ impl Player {
     }
 
     fn next_note_val(&mut self) -> Option<Note> {
+        // Simplify (remove match)?
         match self.current_note {
             Some(current_note) => {
                 if current_note.num_samples != 0 {
                     let current_sample_num = self.sample_num;
                     self.sample_num += 1;
 
-                    if (current_sample_num as u128) >= current_note.num_samples {
+                    if current_sample_num >= current_note.num_samples {
                         self.sample_num = 0;
                         self.current_note = self.next_note();
                     }
                 }
-                Some(current_note)
+                self.current_note
             }
             None => None,
         }
     }
 
+    fn phase(&self, old_freq: f32, new_freq: f32, t: f32) -> f32 {
+        let phase = 2.0 * PI * old_freq * t;
+        let s1 = phase.sin().asin() - 2.0 * PI * new_freq * t + 0.5 * 2.0 * PI;
+        let s2 = -s1;
+        if (phase.sin() - s1).abs() < (phase.sin() - s2).abs() {
+            println!("p:{phase} - s1:{s1} < p:{phase} - s2:{s2}");
+            s1
+        } else {
+            println!("p:{phase} - s2:{s2} < p:{phase} - s1:{s1}");
+            s2
+        }
+    }
+
     fn get_next_sample(&mut self) -> Option<f32> {
         static POS: AtomicU32 = AtomicU32::new(0);
+        let last_freq = self.current_note.unwrap().frequency;
 
+        // Simplify (remove match)?
         match self.next_note_val() {
             Some(n) => {
                 let t = POS.fetch_add(1, Ordering::SeqCst) as f32 / self.sample_rate as f32;
-                Some((2.0 * PI * n.frequency * t).sin() * n.amplitude)
+
+                if last_freq != n.frequency {
+                    self.phase_shift = self.phase(last_freq, n.frequency, t);
+                    println!("last: {}", self.last_y);
+                }
+
+                self.last_y = (2.0 * PI * n.frequency * t + self.phase_shift).sin() * n.amplitude;
+                if last_freq != n.frequency {
+                    println!("new: {}", self.last_y);
+                }
+                Some(self.last_y)
             }
             None => None,
         }
@@ -251,6 +300,8 @@ fn parse_duration(s: &str, tempo: u32) -> Result<Duration, ArgumentParseError> {
 
     // Check if number is power of two
     if (num != 0) && (num & (num - 1)) == 0 {
+        // Calculate duration of note based on beats per minute (tempo)
+        // with 1/4 as one beat.
         let beat_duration = 60.0 * 1000.0 / tempo as f32;
         let beat = 1f32 / 4f32;
         let scale = 1f32 / num as f32 / beat;
@@ -306,6 +357,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .expect(format!("Failed to find device {}", wanted_device).as_str()),
         None => host.default_output_device().unwrap(),
     };
+
     let config = get_device_config(&device, cli.sample_rate);
 
     let mut notes = parse_notes(&cli.sequence, cli.tuning, cli.tempo, config.sample_rate.0)?;
