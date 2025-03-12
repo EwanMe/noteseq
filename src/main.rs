@@ -17,6 +17,7 @@ const REFERENCE_OCTAVE: i32 = 4;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// Note format is on scientific pitch notation followed by ':' and the divisor of a note value fraction.
     /// Note sequence to play. Format of notes is <pitch>:<note value>. The pitch part is on the
     /// format <note name><accidentals><octave number>. Note name is a case insensitive letter
     /// from A-G. Accidentals are optional and can be any number of '#' and 'b' symbols. Octave
@@ -145,7 +146,7 @@ fn get_frequency_from_note(note_name: &str, tuning: f32) -> Result<f32, String> 
 struct Player {
     pos: std::vec::IntoIter<Note>,
     sample_rate: u32,
-    sample_num: u32,
+    sample_num: u128,
     current_note: Option<Note>,
 }
 
@@ -176,12 +177,12 @@ impl Player {
                     let current_sample_num = self.sample_num;
                     self.sample_num += 1;
 
-                    if (current_sample_num as u128) >= current_note.num_samples {
+                    if current_sample_num >= current_note.num_samples {
                         self.sample_num = 0;
                         self.current_note = self.next_note();
                     }
                 }
-                Some(current_note)
+                self.current_note
             }
             None => None,
         }
@@ -189,10 +190,20 @@ impl Player {
 
     fn get_next_sample(&mut self) -> Option<f32> {
         static POS: AtomicU32 = AtomicU32::new(0);
+        let last_freq = self.current_note.unwrap().frequency;
 
         match self.next_note_val() {
             Some(n) => {
-                let t = POS.fetch_add(1, Ordering::SeqCst) as f32 / self.sample_rate as f32;
+                let pos = match last_freq != n.frequency {
+                    true => {
+                        let pos = ((last_freq / n.frequency) * (POS.load(Ordering::SeqCst) as f32))
+                            .round() as u32;
+                        POS.store(pos, Ordering::SeqCst);
+                        pos
+                    }
+                    false => POS.fetch_add(1, Ordering::SeqCst),
+                };
+                let t = pos as f32 / self.sample_rate as f32;
                 Some((2.0 * PI * n.frequency * t).sin() * n.amplitude)
             }
             None => None,
@@ -251,6 +262,8 @@ fn parse_duration(s: &str, tempo: u32) -> Result<Duration, ArgumentParseError> {
 
     // Check if number is power of two
     if (num != 0) && (num & (num - 1)) == 0 {
+        // Calculate duration of note based on beats per minute (tempo)
+        // with 1/4 as one beat.
         let beat_duration = 60.0 * 1000.0 / tempo as f32;
         let beat = 1f32 / 4f32;
         let scale = 1f32 / num as f32 / beat;
@@ -306,6 +319,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .expect(format!("Failed to find device {}", wanted_device).as_str()),
         None => host.default_output_device().unwrap(),
     };
+
     let config = get_device_config(&device, cli.sample_rate);
 
     let mut notes = parse_notes(&cli.sequence, cli.tuning, cli.tempo, config.sample_rate.0)?;
