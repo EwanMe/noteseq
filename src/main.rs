@@ -90,7 +90,12 @@ fn get_device_config(device: &Device, sample_rate: u32) -> StreamConfig {
         .config()
 }
 
-fn get_frequency_from_note(note_name: &str, tuning: f32) -> Result<f32, String> {
+fn get_frequency(
+    note_name: &str,
+    accidentals: &str,
+    octave: Option<i32>,
+    tuning: f32,
+) -> Result<f32, String> {
     fn count_chars(string: &str, c: char) -> i32 {
         string
             .chars()
@@ -99,36 +104,17 @@ fn get_frequency_from_note(note_name: &str, tuning: f32) -> Result<f32, String> 
             .try_into()
             .unwrap()
     }
-    let re = Regex::new(r"^(?P<note>[a-gA-G])(?P<accidental>(#|b)*)(?P<octave>[0-9]?)$").unwrap();
-    let captures = match re.captures(note_name) {
-        Some(captures) => captures,
-        None => {
-            return Err(format!(
-                "Invalid note: {note_name}. Must be letter from A-G (case insensitive), \
-            optionally followed by accidental # or b and an octave number 0-9. E.g. C#4."
-            ))
-        }
+    let mut offset: i32 = 0;
+    offset += count_chars(accidentals, '#');
+    offset -= count_chars(accidentals, 'b');
+    let semitone_offset = offset;
+
+    let octave_num = match octave {
+        Some(octave_num) => octave_num,
+        None => REFERENCE_OCTAVE,
     };
 
-    let note = captures.name("note").unwrap().as_str();
-    let semitone_offset = match captures.name("accidental").unwrap().as_str() {
-        "" => 0,
-        accidental => {
-            let mut offset: i32 = 0;
-            offset += count_chars(accidental, '#');
-            offset -= count_chars(accidental, 'b');
-            offset
-        }
-    };
-
-    let octave_num = match captures.name("octave").unwrap().as_str() {
-        "" => REFERENCE_OCTAVE,
-        octave => octave
-            .parse::<i32>()
-            .expect(format!("Failed to parse '{octave}' into octave number").as_str()),
-    };
-
-    let mut semitone_distance: i32 = match note.to_uppercase().as_str() {
+    let mut semitone_distance: i32 = match note_name.to_uppercase().as_str() {
         "C" => -9,
         "D" => -7,
         "E" => -5,
@@ -171,58 +157,35 @@ impl Player {
     }
 
     fn next_note_val(&mut self) -> Option<Note> {
-        match self.current_note {
-            Some(current_note) => {
-                if current_note.num_samples != 0 {
-                    let current_sample_num = self.sample_num;
-                    self.sample_num += 1;
+        if self.current_note?.num_samples != 0 {
+            let current_sample_num = self.sample_num;
+            self.sample_num += 1;
 
-                    if current_sample_num >= current_note.num_samples {
-                        self.sample_num = 0;
-                        self.current_note = self.next_note();
-                    }
-                }
-                self.current_note
+            if current_sample_num >= self.current_note?.num_samples {
+                self.sample_num = 0;
+                self.current_note = self.next_note();
             }
-            None => None,
         }
+        self.current_note
     }
 
     fn get_next_sample(&mut self) -> Option<f32> {
         static POS: AtomicU32 = AtomicU32::new(0);
         let last_freq = self.current_note.unwrap().frequency;
 
-        match self.next_note_val() {
-            Some(n) => {
-                let pos = match last_freq != n.frequency {
-                    true => {
-                        let pos = ((last_freq / n.frequency) * (POS.load(Ordering::SeqCst) as f32))
-                            .round() as u32;
-                        POS.store(pos, Ordering::SeqCst);
-                        pos
-                    }
-                    false => POS.fetch_add(1, Ordering::SeqCst),
-                };
-                let t = pos as f32 / self.sample_rate as f32;
-                Some((2.0 * PI * n.frequency * t).sin() * n.amplitude)
+        let n = self.next_note_val()?;
+        let pos = match last_freq != n.frequency {
+            true => {
+                let pos = ((last_freq / n.frequency) * (POS.load(Ordering::SeqCst) as f32)).round()
+                    as u32;
+                POS.store(pos, Ordering::SeqCst);
+                pos
             }
-            None => None,
-        }
+            false => POS.fetch_add(1, Ordering::SeqCst),
+        };
+        let t = pos as f32 / self.sample_rate as f32;
+        Some((2.0 * PI * n.frequency * t).sin() * n.amplitude)
     }
-}
-
-fn get_note(
-    note_name: &str,
-    tuning: f32,
-    sample_rate: u32,
-    duration: Duration,
-) -> Result<Note, String> {
-    Note::new(
-        get_frequency_from_note(note_name, tuning)?,
-        0.8,
-        sample_rate,
-        duration,
-    )
 }
 
 #[derive(Debug)]
@@ -250,58 +213,68 @@ impl Error for ArgumentParseError {
     }
 }
 
-fn parse_duration(s: &str, tempo: u32) -> Result<Duration, ArgumentParseError> {
-    let num = match s.parse::<u32>() {
-        Ok(n) => n,
-        Err(e) => {
-            return Err(ArgumentParseError::new(
-                format!("Failed parse integer from string '{s}': {e}").as_str(),
-            ))
-        }
-    };
-
+fn get_note_duration(note_value: u32, tempo: u32) -> Result<Duration, ArgumentParseError> {
     // Check if number is power of two
-    if (num != 0) && (num & (num - 1)) == 0 {
+    if (note_value != 0) && (note_value & (note_value - 1)) == 0 {
         // Calculate duration of note based on beats per minute (tempo)
         // with 1/4 as one beat.
         let beat_duration = 60.0 * 1000.0 / tempo as f32;
         let beat = 1f32 / 4f32;
-        let scale = 1f32 / num as f32 / beat;
+        let scale = 1f32 / note_value as f32 / beat;
         let duration = scale * beat_duration;
         Ok(Duration::from_millis(duration as u64))
     } else {
         Err(ArgumentParseError::new(
-            format!("Note duration {num} was not a power of two").as_str(),
+            format!("Note duration {note_value} was not a power of two").as_str(),
         ))
     }
 }
 
-fn parse_notes(
-    s: &Vec<String>,
+fn get_note(raw_note: &str, tuning: f32, tempo: u32, sample_rate: u32) -> Result<Note, String> {
+    let re = Regex::new(
+        r"^(?P<note>[a-gA-G])(?P<accidental>(#|b)*)(?P<octave>[0-9]*)(:(?P<value>\d{1,2}))?$",
+    )
+    .unwrap();
+    let captures = match re.captures(raw_note) {
+        Some(captures) => captures,
+        None => {
+            return Err(format!(
+                "Invalid note '{raw_note}', see --help for correct note syntax"
+            ))
+        }
+    };
+
+    let note = captures.name("note").unwrap().as_str();
+    let acc = captures.name("accidental").unwrap().as_str();
+
+    let octave: Option<i32> = match captures.name("octave").unwrap().as_str() {
+        "" => None,
+        octave => Some(octave.parse().unwrap()),
+    };
+    let duration = match captures.name("value") {
+        Some(group) => get_note_duration(group.as_str().parse::<u32>().unwrap(), tempo).unwrap(),
+        None => get_note_duration(4, tempo).unwrap(),
+    };
+
+    Note::new(
+        get_frequency(note, acc, octave, tuning)?,
+        0.8,
+        sample_rate,
+        duration,
+    )
+}
+
+fn get_notes(
+    raw_sequence: &Vec<String>,
     tuning: f32,
     tempo: u32,
     sample_rate: u32,
 ) -> Result<Vec<Note>, String> {
-    let t: Result<Vec<Note>, ArgumentParseError> = s
+    let note_sequence: Result<Vec<Note>, String> = raw_sequence
         .iter()
-        .map(|n| {
-            let notes: Vec<&str> = n.split(':').collect();
-            if notes.len() < 2 {
-                return Ok(get_note(notes[0], tuning, sample_rate, Duration::new(1, 0)).unwrap());
-            } else if notes.len() < 3 {
-                return Ok(get_note(
-                    notes[0],
-                    tuning,
-                    sample_rate,
-                    parse_duration(notes[1], tempo).unwrap(),
-                )
-                .unwrap());
-            } else {
-                return Err(ArgumentParseError::new(""));
-            }
-        })
+        .map(|n| get_note(n, tuning, tempo, sample_rate))
         .collect();
-    t.map_err(|e| e.to_string())
+    note_sequence.map_err(|e| e.to_string())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -322,7 +295,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let config = get_device_config(&device, cli.sample_rate);
 
-    let mut notes = parse_notes(&cli.sequence, cli.tuning, cli.tempo, config.sample_rate.0)?;
+    let mut notes = get_notes(&cli.sequence, cli.tuning, cli.tempo, config.sample_rate.0)?;
     if cli.fermata {
         let last = notes.len() - 1;
         notes[last].num_samples = 0;
