@@ -53,6 +53,14 @@ E.g. 8 means an 1/8 note.
 noteseq D:8 E:8 F:8 G:8 E:4 C:8 D:4
 ```
 
+> [!TIP]
+> You don't need to specify the note value for quarter notes,
+> since this is the default value.
+> The same sequence could be written as:
+> ```
+> noteseq D:8 E:8 F:8 G:8 E C:8 D
+> ```
+
 ### Pauses
 
 To insert pauses, omit the pitch from the note, but keep the note value.
