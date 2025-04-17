@@ -158,12 +158,11 @@ impl Player {
 
     fn next_note_val(&mut self) -> Option<Note> {
         if self.current_note?.num_samples != 0 {
-            let current_sample_num = self.sample_num;
-            self.sample_num += 1;
-
-            if current_sample_num >= self.current_note?.num_samples {
+            if self.sample_num >= self.current_note?.num_samples {
                 self.sample_num = 0;
                 self.current_note = self.next_note();
+            } else {
+                self.sample_num += 1;
             }
         }
         self.current_note
@@ -171,20 +170,24 @@ impl Player {
 
     fn get_next_sample(&mut self) -> Option<f32> {
         static POS: AtomicU32 = AtomicU32::new(0);
-        let last_freq = self.current_note.unwrap().frequency;
 
-        let n = self.next_note_val()?;
-        let pos = match last_freq != n.frequency {
-            true => {
-                let pos = ((last_freq / n.frequency) * (POS.load(Ordering::SeqCst) as f32)).round()
-                    as u32;
+        let last_freq = self
+            .current_note
+            .expect("Last note was None, which should not happen before the current note is None")
+            .frequency;
+
+        let next_note = self.next_note_val()?;
+        let pos = match last_freq == next_note.frequency {
+            true => POS.fetch_add(1, Ordering::SeqCst),
+            false => {
+                let pos = ((last_freq / next_note.frequency) * (POS.load(Ordering::SeqCst) as f32))
+                    .round() as u32;
                 POS.store(pos, Ordering::SeqCst);
                 pos
             }
-            false => POS.fetch_add(1, Ordering::SeqCst),
         };
         let t = pos as f32 / self.sample_rate as f32;
-        Some((2.0 * PI * n.frequency * t).sin() * n.amplitude)
+        Some((2.0 * PI * next_note.frequency * t).sin() * next_note.amplitude)
     }
 }
 
@@ -317,6 +320,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                         None => {
                             done_clone.store(true, Ordering::SeqCst);
+                            break;
                         }
                     };
                 }
