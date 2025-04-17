@@ -53,6 +53,14 @@ E.g. 8 means an 1/8 note.
 noteseq D:8 E:8 F:8 G:8 E:4 C:8 D:4
 ```
 
+### Pauses
+
+To insert pauses, omit the pitch from the note, but keep the note value.
+
+```
+noteseq E:4 G:8 :4 D#5:8 D5:2 :4 G:8 A#:4 B:2
+```
+
 ### Tempo
 
 Change the tempo (in BPMs) by using the option `-t` or `--tempo`.

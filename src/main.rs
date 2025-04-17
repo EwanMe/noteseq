@@ -17,13 +17,14 @@ const REFERENCE_OCTAVE: i32 = 4;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// Note format is on scientific pitch notation followed by ':' and the divisor of a note value fraction.
-    /// Note sequence to play. Format of notes is <pitch>:<note value>. The pitch part is on the
-    /// format <note name><accidentals><octave number>. Note name is a case insensitive letter
-    /// from A-G. Accidentals are optional and can be any number of '#' and 'b' symbols. Octave
-    /// number is a single number from 0-9. The note value part of the note is any number that is
-    /// a power of two, i.e. 1, 2, 4, 8, etc. This number represents the fraction of a whole note,
-    /// where the provided number is the divisor, e.g. 8 represents an eight note (1/8).
+    /// Note format is on scientific pitch notation followed by ':' and the divisor of a note value
+    /// fraction, i.e. <pitch>:<note value>. The pitch format is subdivided into
+    /// <note name><accidentals><octave number>. Note name is a case insensitive letter from A-G.
+    /// Accidentals are optional and can be any number of '#' and 'b' symbols. Octave number is a
+    /// single number from 0-9. The note value part of the note is any number that is a power of
+    /// two, i.e. 1, 2, 4, 8, etc. This number represents the fraction of a whole note, where the
+    /// provided number is the divisor, e.g. 8 represents an eight note (1/8). The pitch is however
+    /// optional, and the note value is evaluated as a pause if omitted.
     #[arg(required = true)]
     sequence: Vec<String>,
 
@@ -235,9 +236,9 @@ fn get_note_duration(note_value: u32, tempo: u32) -> Result<Duration, ArgumentPa
 
 fn get_note(raw_note: &str, tuning: f32, tempo: u32, sample_rate: u32) -> Result<Note, String> {
     let re = Regex::new(
-        r"^(?P<note>[a-gA-G])(?P<accidental>(#|b)*)(?P<octave>[0-9]*)(:(?P<value>\d{1,2}))?$",
+        r"^(?P<note>[a-gA-G])?(?P<accidental>(#|b)*)(?P<octave>[0-9]*)(:(?P<value>\d{1,2}))?$",
     )
-    .unwrap();
+    .expect("Invalid regex string for note parsing");
     let captures = match re.captures(raw_note) {
         Some(captures) => captures,
         None => {
@@ -247,7 +248,6 @@ fn get_note(raw_note: &str, tuning: f32, tempo: u32, sample_rate: u32) -> Result
         }
     };
 
-    let note = captures.name("note").unwrap().as_str();
     let acc = captures.name("accidental").unwrap().as_str();
 
     let octave: Option<i32> = match captures.name("octave").unwrap().as_str() {
@@ -259,12 +259,18 @@ fn get_note(raw_note: &str, tuning: f32, tempo: u32, sample_rate: u32) -> Result
         None => get_note_duration(4, tempo).unwrap(),
     };
 
-    Note::new(
-        get_frequency(note, acc, octave, tuning)?,
-        0.8,
-        sample_rate,
-        duration,
-    )
+    const AMP: f32 = 0.8;
+
+    match captures.name("note") {
+        Some(n) => Note::new(
+            get_frequency(n.as_str(), acc, octave, tuning)?,
+            AMP,
+            sample_rate,
+            duration,
+        ),
+        // No pitch means this is a pause
+        None => Note::new(0f32, AMP, sample_rate, duration),
+    }
 }
 
 fn get_notes(
