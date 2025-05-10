@@ -234,16 +234,22 @@ fn get_note_duration(note_value: u32, tempo: u32) -> Result<Duration, ArgumentPa
     }
 }
 
-fn get_note(raw_note: &str, tuning: f32, tempo: u32, sample_rate: u32) -> Result<Note, String> {
-    let re = Regex::new(
+fn get_note(
+    raw_note: &str,
+    amplitude: f32,
+    tuning: f32,
+    tempo: u32,
+    sample_rate: u32,
+) -> Result<Note, String> {
+    let note_re = Regex::new(
         r"^(?P<note>[a-gA-G])?(?P<accidental>(#|b)*)(?P<octave>[0-9]*)(:(?P<value>\d{1,2}))?$",
     )
     .expect("Invalid regex string for note parsing");
-    let captures = match re.captures(raw_note) {
+    let captures = match note_re.captures(raw_note) {
         Some(captures) => captures,
         None => {
             return Err(format!(
-                "Invalid note '{raw_note}', see --help for correct note syntax"
+                "Invalid input '{raw_note}', see --help for correct note syntax"
             ))
         }
     };
@@ -259,17 +265,29 @@ fn get_note(raw_note: &str, tuning: f32, tempo: u32, sample_rate: u32) -> Result
         None => get_note_duration(4, tempo).unwrap(),
     };
 
-    const AMP: f32 = 0.8;
-
     match captures.name("note") {
         Some(n) => Note::new(
             get_frequency(n.as_str(), acc, octave, tuning)?,
-            AMP,
+            amplitude,
             sample_rate,
             duration,
         ),
         // No pitch means this is a pause
-        None => Note::new(0f32, AMP, sample_rate, duration),
+        None => Note::new(0f32, amplitude, sample_rate, duration),
+    }
+}
+
+fn get_dynamic(dynamic_indication: &str) -> Result<f32, String> {
+    let dynamics = vec!["ppp", "pp", "p", "mp", "mf", "f", "ff", "fff"];
+
+    match dynamics.iter().position(|elem| elem == &dynamic_indication) {
+        Some(i) => Ok((1 * (i + 1)) as f32 / dynamics.len() as f32),
+        None => {
+            return Err(format!(
+                "Unknown dynamic indication '{dynamic_indication}', expected one of {}",
+                dynamics.join(", ")
+            ))
+        }
     }
 }
 
@@ -279,11 +297,27 @@ fn get_notes(
     tempo: u32,
     sample_rate: u32,
 ) -> Result<Vec<Note>, String> {
-    let note_sequence: Result<Vec<Note>, String> = raw_sequence
-        .iter()
-        .map(|n| get_note(n, tuning, tempo, sample_rate))
-        .collect();
-    note_sequence.map_err(|e| e.to_string())
+    let mut note_sequence: Vec<Result<Note, String>> = vec![];
+    let mut amplitude = 0.5;
+
+    let dynamic_re: Regex = Regex::new(r"(?P<dynamic>^p{1,3}$|^mp$|^mf$|^f{1,3}$)")
+        .expect("Invalid regex string for parsing dynamics");
+
+    for arg in raw_sequence.iter() {
+        match dynamic_re.captures(arg) {
+            Some(n) => {
+                let name = n
+                    .name("dynamic")
+                    .expect("Failed to capture group 'dynamic'")
+                    .as_str();
+                amplitude = get_dynamic(name)?;
+            }
+            None => {
+                note_sequence.push(get_note(arg, amplitude, tuning, tempo, sample_rate));
+            }
+        };
+    }
+    note_sequence.into_iter().collect()
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -342,7 +376,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match &cli.fermata {
         true => {
-            println!("Press Enter to exit...");
+            println!("Press Enter to stop playback...");
             let _ = std::io::stdin().read_line(&mut String::new());
         }
         false => while !done.load(Ordering::SeqCst) {},
