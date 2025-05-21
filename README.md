@@ -57,6 +57,7 @@ noteseq D:8 E:8 F:8 G:8 E:4 C:8 D:4
 > You don't need to specify the note value for quarter notes,
 > since this is the default value.
 > The same sequence could be written as:
+>
 > ```
 > noteseq D:8 E:8 F:8 G:8 E C:8 D
 > ```
@@ -76,6 +77,16 @@ The default tempo is 120 BPM.
 
 ```
 noteseq --tempo 180 D:8 E:8 F:8 G:8 E:4 C:8 D:4
+```
+
+### Dynamics
+
+Note dynamics can be controlled with dynamic indications.
+The supported indications are `ppp`, `pp`, `p`, `mp`, `mf`, `f`, `ff`, `fff`.
+These can be interwoven into the note sequence.
+
+```
+noteseq --tempo 55 p C:2 G:2 C5:2 C5:4 f E5:8 Eb5:1
 ```
 
 ### Fermata
