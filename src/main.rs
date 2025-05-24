@@ -234,6 +234,15 @@ fn get_note_duration(note_value: u32, tempo: u32) -> Result<Duration, ArgumentPa
     }
 }
 
+fn get_dotting_duration(num_dots: usize, note_duration: Duration) -> Duration {
+    println!("num dots: {}", num_dots);
+    let mut new_duration = Duration::new(0, 0);
+    for i in 1..num_dots + 1 {
+        new_duration += note_duration / 2u32.pow(i as u32);
+    }
+    new_duration
+}
+
 fn get_note(
     raw_note: &str,
     amplitude: f32,
@@ -242,7 +251,7 @@ fn get_note(
     sample_rate: u32,
 ) -> Result<Note, String> {
     let note_re = Regex::new(
-        r"^(?P<note>[a-gA-G])?(?P<accidental>(#|b)*)(?P<octave>[0-9]*)(:(?P<value>\d{1,2}))?$",
+        r"^(?P<note>[a-gA-G])?(?P<accidental>(#|b)*)(?P<octave>[0-9]*)(:(?P<value>\d{1,2}))?(?P<dotting>\.+)?$",
     )
     .expect("Invalid regex string for note parsing");
     let captures = match note_re.captures(raw_note) {
@@ -260,9 +269,16 @@ fn get_note(
         "" => None,
         octave => Some(octave.parse().unwrap()),
     };
-    let duration = match captures.name("value") {
-        Some(group) => get_note_duration(group.as_str().parse::<u32>().unwrap(), tempo).unwrap(),
-        None => get_note_duration(4, tempo).unwrap(),
+
+    let note_value = match captures.name("value") {
+        Some(duration) => duration.as_str().parse::<u32>().unwrap(),
+        None => 4,
+    };
+    let mut duration = get_note_duration(note_value, tempo).map_err(|x| x.msg)?;
+
+    match captures.name("dotting") {
+        Some(dotting) => duration += get_dotting_duration(dotting.len(), duration),
+        None => (),
     };
 
     match captures.name("note") {
