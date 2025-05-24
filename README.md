@@ -62,6 +62,15 @@ noteseq D:8 E:8 F:8 G:8 E:4 C:8 D:4
 > noteseq D:8 E:8 F:8 G:8 E C:8 D
 > ```
 
+### Dotted notes
+
+Append dots to the note value to created dotted notes.
+Up to 4 dots are supported.
+
+```
+noteseq A4:8 C5:4 D5:8 E5:8. F5:16 E5:8 D5:4 B4:8 G4:8.
+```
+
 ### Pauses
 
 To insert pauses, omit the pitch from the note, but keep the note value.
@@ -86,7 +95,7 @@ The supported indications are `ppp`, `pp`, `p`, `mp`, `mf`, `f`, `ff`, `fff`.
 These can be interwoven into the note sequence.
 
 ```
-noteseq --tempo 55 p C:2 G:2 C5:2 C5:4 f E5:8 Eb5:1
+noteseq --tempo 55 p C:2 G:2 C5:2. f E5:8 Eb5:1
 ```
 
 ### Fermata

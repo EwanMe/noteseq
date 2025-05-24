@@ -23,8 +23,9 @@ struct Cli {
     /// Accidentals are optional and can be any number of '#' and 'b' symbols. Octave number is a
     /// single number from 0-9. The note value part of the note is any number that is a power of
     /// two, i.e. 1, 2, 4, 8, etc. This number represents the fraction of a whole note, where the
-    /// provided number is the divisor, e.g. 8 represents an eight note (1/8). The pitch is however
-    /// optional, and the note value is evaluated as a pause if omitted.
+    /// provided number is the divisor, e.g. 8 represents an eight note (1/8). Dotted notes can be
+    /// played by appending up to 4 dots to the note value. The pitch of the note may also be
+    /// omitted, which produces a pause instead of a note.
     #[arg(required = true)]
     sequence: Vec<String>,
 
@@ -234,6 +235,14 @@ fn get_note_duration(note_value: u32, tempo: u32) -> Result<Duration, ArgumentPa
     }
 }
 
+fn get_dotting_duration(num_dots: usize, note_duration: Duration) -> Duration {
+    let mut new_duration = Duration::new(0, 0);
+    for i in 1..num_dots + 1 {
+        new_duration += note_duration / 2u32.pow(i as u32);
+    }
+    new_duration
+}
+
 fn get_note(
     raw_note: &str,
     amplitude: f32,
@@ -242,7 +251,7 @@ fn get_note(
     sample_rate: u32,
 ) -> Result<Note, String> {
     let note_re = Regex::new(
-        r"^(?P<note>[a-gA-G])?(?P<accidental>(#|b)*)(?P<octave>[0-9]*)(:(?P<value>\d{1,2}))?$",
+        r"^(?P<note>[a-gA-G])?(?P<accidental>(#|b)*)(?P<octave>[0-9]*)(:(?P<value>\d{1,2}))?(?P<dotting>\.{1,4})?$",
     )
     .expect("Invalid regex string for note parsing");
     let captures = match note_re.captures(raw_note) {
@@ -260,9 +269,16 @@ fn get_note(
         "" => None,
         octave => Some(octave.parse().unwrap()),
     };
-    let duration = match captures.name("value") {
-        Some(group) => get_note_duration(group.as_str().parse::<u32>().unwrap(), tempo).unwrap(),
-        None => get_note_duration(4, tempo).unwrap(),
+
+    let note_value = match captures.name("value") {
+        Some(duration) => duration.as_str().parse::<u32>().unwrap(),
+        None => 4,
+    };
+    let mut duration = get_note_duration(note_value, tempo).map_err(|x| x.msg)?;
+
+    match captures.name("dotting") {
+        Some(dotting) => duration += get_dotting_duration(dotting.len(), duration),
+        None => (),
     };
 
     match captures.name("note") {
