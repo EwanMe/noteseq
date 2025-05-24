@@ -62,6 +62,15 @@ noteseq D:8 E:8 F:8 G:8 E:4 C:8 D:4
 > noteseq D:8 E:8 F:8 G:8 E C:8 D
 > ```
 
+### Dotted notes
+
+Append dots to the note value to created dotted notes.
+Up to 4 dots are supported.
+
+```
+noteseq <example here>
+```
+
 ### Pauses
 
 To insert pauses, omit the pitch from the note, but keep the note value.
