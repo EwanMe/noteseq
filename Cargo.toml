@@ -1,11 +1,18 @@
 [package]
 name = "noteseq"
 version = "1.0.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+edition = "2024"
+description = "Note sequencer for the command line"
 
 [dependencies]
-clap = { version = "4.5.20", features = ["derive"] }
-cpal = "0.15.3"
+clap = { version = "4.5.41", features = ["derive"] }
+cpal = "0.16.0"
 regex = "1.11.1"
+
+[package.metadata.deb]
+maintainer = "Hallvard Jensen <hallvard.jensen@gmail.com>"
+copyright = "2025, Hallvard Jensen"
+license-file = ["LICENSE"]
+assets = [
+    ["target/release/noteseq", "usr/bin/", "755"],
+]

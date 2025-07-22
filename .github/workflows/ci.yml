@@ -1,0 +1,14 @@
+name: Create release
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  create_deb_package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Create DEB package
+        run: cargo deb
